@@ -1,6 +1,6 @@
 FROM node:20-bookworm-slim AS build
 ENV PYTHON=python3 \
-  MEDIASOUP_BUILDTYPE=plain \
+  MEDIASOUP_BUILDTYPE=Release \
   MESON_ARGS=-Dms_disable_liburing=true \
   CFLAGS=-O0\ -g0 \
   CXXFLAGS=-O0\ -g0
@@ -13,6 +13,7 @@ RUN npm ci
 COPY browser ./browser
 RUN npm run build
 RUN npm prune --omit=dev
+RUN test -x /app/node_modules/mediasoup/worker/out/Release/mediasoup-worker
 
 FROM node:20-bookworm-slim
 ENV NODE_ENV=production
