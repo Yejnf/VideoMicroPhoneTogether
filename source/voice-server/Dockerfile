@@ -1,5 +1,9 @@
 FROM node:20-bookworm-slim AS build
-ENV PYTHON=python3
+ENV PYTHON=python3 \
+  MEDIASOUP_BUILDTYPE=plain \
+  MESON_ARGS=-Dms_disable_liburing=true \
+  CFLAGS=-O0\ -g0 \
+  CXXFLAGS=-O0\ -g0
 WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 python3-pip build-essential \
