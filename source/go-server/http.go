@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/VideoTogether/VideoTogether/internal/qps"
@@ -23,6 +23,19 @@ var easyshareErr = 0
 var confirmM3u8Download = 0
 var confirmVideoDownload = 0
 var downloadCompleted = 0
+
+const maxKrakenBodyBytes = 1 << 20
+
+func readLimited(reader io.Reader, maxBytes int64) ([]byte, bool, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, true, nil
+	}
+	return data, false, nil
+}
 
 func Init() {
 	vtVersion = randInt(0, 1e9)
@@ -181,7 +194,10 @@ func (h *slashFix) handleBetaAdmin(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	h.vtSrv.LoadConfiguration()
+	if err := h.vtSrv.LoadConfiguration(); err != nil {
+		http.Error(res, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	reqVtVersion := int(floatParam(req, "vtVersion", nil))
 	vtVersion = reqVtVersion
 }
@@ -219,9 +235,9 @@ func (h *slashFix) handleKraken(res http.ResponseWriter, req *http.Request) {
 	var krakenUrl = h.vtSrv.config.KrakenGlobalEndpoint
 
 	defer req.Body.Close()
-	bodyBytes, err := ioutil.ReadAll(req.Body)
+	bodyBytes, err := io.ReadAll(http.MaxBytesReader(res, req.Body, maxKrakenBodyBytes))
 	if err != nil {
-		http.Error(res, err.Error(), http.StatusInternalServerError)
+		http.Error(res, "request body is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -234,11 +250,17 @@ func (h *slashFix) handleKraken(res http.ResponseWriter, req *http.Request) {
 
 		var body map[string]interface{}
 		if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&body); err == nil {
-			krakenMethod := body["method"].(string)
+			krakenMethod, ok := body["method"].(string)
+			if !ok {
+				return
+			}
 
 			if krakenMethod == "subscribe" || krakenMethod == "answer" || krakenMethod == "trickle" || krakenMethod == "publish" {
-				krakenRoomName := body["params"].([]interface{})[0].(string)
-				krakenUrl = GetKrakenRoomEndpoint(krakenRoomName, krakenUrl)
+				if params, ok := body["params"].([]interface{}); ok && len(params) > 0 {
+					if krakenRoomName, ok := params[0].(string); ok {
+						krakenUrl = GetKrakenRoomEndpoint(krakenRoomName, krakenUrl)
+					}
+				}
 			} else if krakenMethod != "turn" {
 				// unknown method
 				log.Println("unknown krakenMethod", krakenMethod)
@@ -266,7 +288,11 @@ func (h *slashFix) handleKraken(res http.ResponseWriter, req *http.Request) {
 	}
 
 	defer resp.Body.Close()
-	responseData, err := ioutil.ReadAll(resp.Body)
+	responseData, tooLarge, err := readLimited(resp.Body, maxKrakenBodyBytes)
+	if tooLarge {
+		http.Error(res, "upstream response body is too large", http.StatusBadGateway)
+		return
+	}
 	if err != nil {
 		http.Error(res, err.Error(), http.StatusBadGateway)
 		return
@@ -369,7 +395,11 @@ func (h *slashFix) respondError(w io.Writer, errorMessage string) {
 }
 
 func (h *slashFix) enableCors(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	origin := strings.TrimSpace(os.Getenv("CORS_ORIGIN"))
+	if origin == "" {
+		origin = "*"
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Max-Age", "86400")
 	w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,OPTIONS")
 }

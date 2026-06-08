@@ -5,6 +5,7 @@ import os
 import json
 import pathlib
 import shutil
+import subprocess
 from time import time
 
 current_path = os.path.dirname(__file__)
@@ -16,6 +17,7 @@ def ReadSource(path):
 
 
 def WriteSource(path, content):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
@@ -145,46 +147,61 @@ def build():
             if r"{{{" not in sourceContent and '{$' not in sourceContent:
                 continue
             print(Path(sourceSubDir).joinpath(sourceFile))
-            resultContent = sourceContent
             resultExtension = pathlib.Path(sourceFile).suffix
             resultFilename = pathlib.Path(sourceFile).stem
             compile(sourceSubDir, resultExtension,
                     resultFilename, [], sourceContent)
 
-disable_network = False
-for arg in sys.argv:
-    if arg == "disable_network":
-        disable_network = True
-        break
+def should_sync_remote_sources():
+    # Default builds are offline and reproducible. Use --sync-remote only for
+    # release builds that intentionally refresh external source folders.
+    return "--sync-remote" in sys.argv or "sync_remote" in sys.argv
+
+
+def sync_remote_sources():
+    repos = [
+        ("https://github.com/VideoTogether/localvideo", "source/local"),
+        ("https://github.com/VideoTogether/website_next", "source/website"),
+        ("https://github.com/VideoTogether/setting", "source/setting"),
+    ]
+    for repo_url, target in repos:
+        target_path = rootPath.joinpath(target)
+        if target_path.exists():
+            subprocess.run(["git", "-C", str(target_path), "pull"], check=True)
+        else:
+            subprocess.run(["git", "clone", repo_url, str(target_path)], check=True)
 
 if __name__ == '__main__':
     global rootPath
     path = Path(os.path.realpath(sys.argv[0]))
     rootPath = path.parent.parent
-    if not disable_network:
-        os.system(
-            "git clone https://github.com/VideoTogether/localvideo {}/source/local".format(rootPath))
-        os.system("cd {}/source/local && git pull".format(rootPath))
-
-        os.system(
-            "git clone https://github.com/VideoTogether/website_next {}/source/website".format(rootPath))
-        os.system("cd {}/source/website && git pull".format(rootPath))
-
-        os.system(
-            "git clone https://github.com/VideoTogether/setting {}/source/setting".format(rootPath))
-        os.system("cd {}/source/setting && git pull".format(rootPath))
+    if should_sync_remote_sources():
+        sync_remote_sources()
 
     build()
 
     def cp(src, dst):
-        shutil.copyfile(rootPath.joinpath(src),
-                        rootPath.joinpath(dst))
+        src_path = rootPath.joinpath(src)
+        dst_path = rootPath.joinpath(dst)
+        if not src_path.exists():
+            print("--Skip copy missing: ", src_path)
+            return
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src_path, dst_path)
 
     def mv(src, dst):
-        shutil.move(rootPath.joinpath(src),
-                    rootPath.joinpath(dst))
+        src_path = rootPath.joinpath(src)
+        dst_path = rootPath.joinpath(dst)
+        if not src_path.exists():
+            print("--Skip move missing: ", src_path)
+            return
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(src_path, dst_path)
+
     def remove(src):
-        os.remove(rootPath.joinpath(src))
+        path = rootPath.joinpath(src)
+        if path.exists():
+            os.remove(path)
     remove("release/local_video_player.html")
     remove("release/local_videos.html")
     remove("release/local_page.js")
@@ -205,18 +222,12 @@ if __name__ == '__main__':
     # shutil.copyfile(rootPath.joinpath("release/vt.debug.zh-cn.user.js"),
     #                 rootPath.joinpath("source/chrome/vt.debug.zh-cn.user.js"))
 
-    shutil.copyfile(rootPath.joinpath("release/extension.chrome.user.js"),
-                    rootPath.joinpath("source/chrome/extension.chrome.user.js"))
-    shutil.copyfile(rootPath.joinpath("release/extension.safari.user.js"),
-                    rootPath.joinpath("source/safari/VideoTogether/Shared (Extension)/Resources/extension.safari.user.js"))
-    shutil.copyfile(rootPath.joinpath("release/extension.firefox.user.js"),
-                    rootPath.joinpath("source/firefox/extension.firefox.user.js"))
+    cp("release/extension.chrome.user.js", "source/chrome/extension.chrome.user.js")
+    cp("release/extension.safari.user.js", "source/safari/VideoTogether/Shared (Extension)/Resources/extension.safari.user.js")
+    cp("release/extension.firefox.user.js", "source/firefox/extension.firefox.user.js")
 
-    shutil.copyfile(rootPath.joinpath("release/background.chrome.js"),
-                    rootPath.joinpath("source/chrome/background.chrome.js"))
-    shutil.copyfile(rootPath.joinpath("release/background.firefox.js"),
-                    rootPath.joinpath("source/firefox/background.firefox.js"))
-    shutil.copyfile(rootPath.joinpath("release/background.safari.js"),
-                    rootPath.joinpath("source/safari/VideoTogether/Shared (Extension)/Resources/background.safari.js"))
+    cp("release/background.chrome.js", "source/chrome/background.chrome.js")
+    cp("release/background.firefox.js", "source/firefox/background.firefox.js")
+    cp("release/background.safari.js", "source/safari/VideoTogether/Shared (Extension)/Resources/background.safari.js")
 
     outputUnusedLocalizationKeys()

@@ -66,7 +66,9 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 	Init()
-	_ = os.WriteFile("admin_password.txt", []byte(adminPassword), 0644)
+	if err := os.WriteFile("admin_password.txt", []byte(adminPassword), 0600); err != nil {
+		log.Printf("Failed to write admin password file: %v", err)
+	}
 	vtSrv := NewVideoTogetherService(time.Minute * 3)
 	server := newSlashFix(
 		render.New(),

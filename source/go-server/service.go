@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/url"
@@ -16,6 +17,8 @@ import (
 )
 
 var DownloadCount = 0
+
+const defaultKrakenEndpoint = "http://127.0.0.1:7002/"
 
 type Sponsor struct {
 	Room          string `json:"room"`
@@ -41,11 +44,13 @@ type Configuration struct {
 
 func NewVideoTogetherService(roomExpireTime time.Duration) *VideoTogetherService {
 	s := &VideoTogetherService{
-		config:         Configuration{},
+		config:         defaultConfiguration(),
 		rooms:          sync.Map{},
 		roomExpireTime: roomExpireTime,
 	}
-	s.LoadConfiguration()
+	if err := s.LoadConfiguration(); err != nil {
+		log.Printf("Using default configuration: %v", err)
+	}
 	return s
 }
 
@@ -63,12 +68,27 @@ func (s *VideoTogetherService) Timestamp() float64 {
 	return float64(time.Now().UnixMilli()) / 1000
 }
 
-func (s *VideoTogetherService) LoadConfiguration() {
-	configStr, err := os.ReadFile("./config.json")
-	if err != nil {
-		log.Panic("Error when opening file: ", err)
-		return
+func defaultConfiguration() Configuration {
+	return Configuration{
+		Sponsors:             map[string]Sponsor{},
+		BlockDomains:         map[string]bool{},
+		ReechoQuota:          ReechoQuota{},
+		KrakenChinaEndpoint:  defaultKrakenEndpoint,
+		KrakenGlobalEndpoint: defaultKrakenEndpoint,
 	}
+}
+
+func (s *VideoTogetherService) LoadConfiguration() error {
+	configPath := strings.TrimSpace(os.Getenv("CONFIG_FILE"))
+	if configPath == "" {
+		configPath = "./config.json"
+	}
+
+	configStr, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("cannot read config file %q: %w", configPath, err)
+	}
+
 	type ConfigRaw struct {
 		Sponsors             []Sponsor `json:"sponsors"`
 		BlockDomains         []string
@@ -81,9 +101,10 @@ func (s *VideoTogetherService) LoadConfiguration() {
 	var configRaw ConfigRaw
 	err = json.Unmarshal(configStr, &configRaw)
 	if err != nil {
-		log.Panic("Error during Unmarshal(): ", err)
-		return
+		return fmt.Errorf("cannot parse config file %q: %w", configPath, err)
 	}
+
+	config := defaultConfiguration()
 	sponsorMap := make(map[string]Sponsor)
 	for _, sponsor := range configRaw.Sponsors {
 		sponsorMap[sponsor.Room] = sponsor
@@ -92,25 +113,31 @@ func (s *VideoTogetherService) LoadConfiguration() {
 	for _, domain := range configRaw.BlockDomains {
 		blockDomains[domain] = true
 	}
-	s.config.Sponsors = sponsorMap
-	s.config.BlockDomains = blockDomains
-	s.config.ReechoToken = configRaw.ReechoToken
-	s.config.ReechoQuota = configRaw.ReechoQuota
-	s.config.KrakenChinaEndpoint = configRaw.KrakenChinaEndpoint
-	s.config.KrakenGlobalEndpoint = configRaw.KrakenGlobalEndpoint
+	config.Sponsors = sponsorMap
+	config.BlockDomains = blockDomains
+	config.ReechoToken = configRaw.ReechoToken
+	config.ReechoQuota = configRaw.ReechoQuota
+	if configRaw.KrakenChinaEndpoint != "" {
+		config.KrakenChinaEndpoint = configRaw.KrakenChinaEndpoint
+	}
+	if configRaw.KrakenGlobalEndpoint != "" {
+		config.KrakenGlobalEndpoint = configRaw.KrakenGlobalEndpoint
+	}
 	if configRaw.ChinaIpList != "" {
 		ipRanges, err := loadChinaIPRanges(configRaw.ChinaIpList)
 		if err != nil {
 			log.Println("Error loading China IP ranges: ", err)
 		} else {
 			log.Println("Loaded China IP ranges: ", ipRanges.Len())
-			s.config.ChinaIPRanges = ipRanges
+			config.ChinaIPRanges = ipRanges
 		}
 	}
+	s.config = config
 	// print config
 	log.Println("Sponsors: ", sponsorMap)
 	log.Println("BlockDomains: ", blockDomains)
 	log.Println("ReechoQuota: ", configRaw.ReechoQuota)
+	return nil
 }
 
 func (s *VideoTogetherService) GetRoomBackgroundUrl(ctx *VtContext, room string) string {
@@ -131,7 +158,7 @@ func (s *VideoTogetherService) GetAndCheckUpdatePermissionsOfRoom(ctx *VtContext
 
 	room := s.QueryRoom(roomName)
 	if room == nil {
-		room = s.CreateRoom(ctx, roomName, roomPassword, userId)
+		room = s.createRoom(ctx, roomName, roomPassword, userId)
 	}
 
 	isNewUser := !room.QueryUser(userId)
@@ -154,7 +181,11 @@ func (s *VideoTogetherService) GetAndCheckUpdatePermissionsOfRoom(ctx *VtContext
 	return room, nil
 }
 
-func (s *VideoTogetherService) CreateRoom(ctx *VtContext, name, password string, hostId string) *Room {
+func (s *VideoTogetherService) CreateRoom(name, password string, hostId string) *Room {
+	return s.createRoom(&VtContext{}, name, password, hostId)
+}
+
+func (s *VideoTogetherService) createRoom(ctx *VtContext, name, password string, hostId string) *Room {
 	if strings.HasPrefix(name, "download_") {
 		DownloadCount++
 	}

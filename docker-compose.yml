@@ -13,6 +13,7 @@ services:
       RTC_MIN_PORT: ${RTC_MIN_PORT:-40000}
       RTC_MAX_PORT: ${RTC_MAX_PORT:-40100}
       ROOM_SECRET: ${ROOM_SECRET:-}
+      ALLOW_OPEN_ROOMS: ${ALLOW_OPEN_ROOMS:-false}
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
     ulimits:
       nofile:

@@ -22,7 +22,13 @@ let isDevelopment = true;
 python .\script\build_extension.py
 ```
 
-这是一个简单的编译脚本，将 `source` 目录中一些需要编译的文件做一些简单的字符串替换后输出到 `release` 目录，然后将插件需要的代码复制到插件目录，Chrome 插件的目录是 `source/chrome`
+这是一个简单的编译脚本，将 `source` 目录中一些需要编译的文件做一些简单的字符串替换后输出到 `release` 目录，然后将插件需要的代码复制到插件目录，Chrome 插件的目录是 `source/chrome`。
+
+默认构建不会访问网络，也不会自动拉取 `source/local`、`source/website`、`source/setting` 这些外部资源目录；缺失的外部产物会被跳过。发布时如需刷新这些远程资源，请显式运行：
+
+```
+python .\script\build_extension.py --sync-remote
+```
 
 ### 3. 运行本地插件
 

@@ -33,7 +33,7 @@ func loadChinaIPRanges(filePath string) (IPRanges, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		parts := strings.Split(line, " ")
-		if len(parts) == 2 {
+		if len(parts) == 2 && net.ParseIP(parts[0]).To4() != nil && net.ParseIP(parts[1]).To4() != nil {
 			ranges = append(ranges, IPRange{
 				Start: net.ParseIP(parts[0]),
 				End:   net.ParseIP(parts[1]),
@@ -47,8 +47,12 @@ func (r IPRanges) search(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
+	ip = ip.To4()
+	if ip == nil {
+		return false
+	}
 	left, right := 0, len(r)-1
-	ipVal := binary.BigEndian.Uint32(ip.To4())
+	ipVal := binary.BigEndian.Uint32(ip)
 
 	for left <= right {
 		mid := left + (right-left)/2

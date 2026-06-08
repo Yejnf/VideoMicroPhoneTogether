@@ -19,7 +19,7 @@ VideoTogether 的视频仍由原视频网站直接传输，现有 Go 服务仍�
    cp .env.example .env
    ```
 
-2. `PUBLIC_IP` 必须是 VPS 的公网 IPv4。`DOMAIN` 是 HTTPS/WSS 域名。`ROOM_SECRET` 可选；设置后，页面需要在 VideoTogether 脚本运行前设置相同的 `window.VideoTogetherVoiceRoomSecret`。
+2. `PUBLIC_IP` 必须是 VPS 的公网 IPv4。`DOMAIN` 是 HTTPS/WSS 域名。`ROOM_SECRET` 默认必填，部署前请替换成足够长的随机字符串；如果你明确希望任何人都能加入语音房间，可以设置 `ALLOW_OPEN_ROOMS=true`。
 3. 启动服务：
 
    ```bash
@@ -28,13 +28,15 @@ VideoTogether 的视频仍由原视频网站直接传输，现有 Go 服务仍�
 
 4. 将 `deploy/nginx/voice.conf` 安装到 Nginx 并替换域名及证书路径。
 5. 防火墙开放 TCP 443、可选的 TCP 3000，以及 UDP 40000-40100。Nginx 只代理 HTTPS/WSS 信令和依赖脚本；UDP 媒体必须直接到达容器映射端口。
-6. 在 VideoTogether 脚本运行前设置语音服务地址，例如：
+6. 在 VideoTogether 脚本运行前设置语音服务地址和语音房间密钥，例如：
 
    ```html
    <script>window.VideoTogetherVoiceServer = "https://voice.example.com";</script>
+   <script>window.VideoTogetherVoiceRoomSecret = "replace-with-the-same-room-secret";</script>
    ```
 
 `mediasoup` 的 WebRtcTransport 监听容器内 `0.0.0.0`，并使用 `PUBLIC_IP`（也可用能解析到公网 IP 的 `DOMAIN`）作为 `announcedIp`。不要把私网 IP 填入 `PUBLIC_IP`。
+`CORS_ORIGIN` 默认为 `*`，这是为了兼容用户脚本从不同视频网站跨域连接语音服务；如果只从自有站点加载，可以改成你的站点 Origin。
 
 ## 容量与运维
 

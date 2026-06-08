@@ -45,7 +45,21 @@ sudo certbot certonly --manual --preferred-challenges dns -d yourdomain.com
 
 ### 4. 配置 Go Server
 
-修改 `main.go` 中的域名：
+复制并修改运行配置：
+
+```bash
+cp config.example.json config.json
+```
+
+默认读取当前目录下的 `config.json`。如果配置文件放在其他路径，可以使用环境变量：
+
+```bash
+export CONFIG_FILE="/opt/videotogether/config.json"
+```
+
+如果缺少配置文件，服务会使用内置默认值启动并打印告警，方便临时部署；正式环境仍建议提供 `config.json`，尤其是 Kraken endpoint、屏蔽域名、赞助图和 Reecho 配置。
+
+修改 `main.go` 中的证书域名默认值：
 
 ```go
 if certFile == "" {
@@ -62,6 +76,12 @@ if keyFile == "" {
 export CERT_FILE="/etc/letsencrypt/live/yourdomain.com/fullchain.pem"
 export KEY_FILE="/etc/letsencrypt/live/yourdomain.com/privkey.pem"
 ./server prod
+```
+
+跨域响应默认允许 `*`，这是为了兼容用户脚本从不同视频网站访问同步服务。如需收紧来源，可以设置：
+
+```bash
+export CORS_ORIGIN="https://your-site.example"
 ```
 
 ### 5. 自动续期

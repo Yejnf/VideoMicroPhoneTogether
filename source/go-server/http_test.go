@@ -23,7 +23,7 @@ var _ = Describe("Http Api", func() {
 	BeforeEach(func() {
 		server = ghttp.NewServer()
 		vtSrv = NewVideoTogetherService(time.Minute * 3)
-		api = newSlashFix(render.New(), vtSrv, qps.NewQP(time.Second, 3600), "", http.DefaultClient)
+		api = newSlashFix(render.New(), vtSrv, qps.NewQP(time.Second, 3600), http.DefaultClient)
 		server.AppendHandlers(api.ServeHTTP)
 	})
 
