@@ -139,6 +139,10 @@
             <input id="callVolume" class="slider" type="range" value="100" min="0" max="100">
           </div>
         </div>
+        <div class="voice-members-panel">
+          <strong>{$voice_members$}</strong>
+          <div id="voiceMemberList"><div class="voice-member-empty">{$voice_no_members$}</div></div>
+        </div>
         <div id="iosVolumeErr" style="display: none;">
           <p>{$ios_does_not_support_volume_adjustment$}</p>
         </div>
@@ -177,8 +181,11 @@
           <span>{$exit_room_button$}</span>
         </button>
 
-        <button id="callBtn" class="vt-btn vt-btn-dangerous" type="button">
-          <span>{$voice_call_button$}</span>
+        <button id="callBtn" class="vt-btn vt-btn-secondary" type="button">
+          <span>{$voice_join_button$}</span>
+        </button>
+        <button id="leaveVoiceBtn" class="vt-btn vt-btn-dangerous" style="display: none;" type="button">
+          <span>{$voice_leave_button$}</span>
         </button>
 
 
@@ -798,6 +805,11 @@
   #downloadVideoInfo {
     display: block;
   }
+
+  .voice-members-panel { margin: 12px 20px; text-align: left; }
+  #voiceMemberList { margin-top: 6px; max-height: 120px; overflow-y: auto; }
+  .voice-member { display: flex; justify-content: space-between; padding: 4px 8px; border-bottom: 1px solid #eee; }
+  .voice-member-empty { color: #888; padding: 4px 8px; }
 
   .ellipsis {
     white-space: nowrap;

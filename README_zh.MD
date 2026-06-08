@@ -48,3 +48,7 @@ QQ群: 170200260
 
 <img width="290" alt="B54A4B2B-D606-4CD8-B5BF-0AA53CD1B010" src="https://user-images.githubusercontent.com/23057110/182861201-022c9460-9174-47ce-b8d8-3ab3ff737e25.png">
 
+
+### 服务器中继加密语音
+
+本分支提供基于 Socket.IO + mediasoup 的纯音频 SFU，视频画面仍由原视频网站直接传输。部署与配置请参阅 [服务器中继加密语音聊天文档](./docs/zh-cn/voice-sfu.md)。

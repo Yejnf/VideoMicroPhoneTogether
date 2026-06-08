@@ -738,499 +738,232 @@
         _errorMessage: "",
         _rname: "",
         _mutting: false,
-        get errorMessage() {
-            return this._errorMessage;
-        },
-        set errorMessage(m) {
-            this._errorMessage = m;
-            updateInnnerHTML(select("#snackbar"), m);
-            let voiceConnErrBtn = select('#voiceConnErrBtn');
-            if (voiceConnErrBtn != undefined) {
-                voiceConnErrBtn.onclick = () => {
-                    alert('{$voice_connection_error_help$}')
-                }
-            }
-        },
-        set status(s) {
-            this._status = s;
-            let disabledMic = select("#disabledMic");
-            let micBtn = select('#micBtn');
-            let audioBtn = select('#audioBtn');
-            let callBtn = select("#callBtn");
-            let callConnecting = select("#callConnecting");
-            let callErrorBtn = select("#callErrorBtn");
-            dsply(callConnecting, s == VoiceStatus.CONNECTTING);
-            dsply(callBtn, s == VoiceStatus.STOP);
-            let inCall = (VoiceStatus.UNMUTED == s || VoiceStatus.MUTED == s);
-            dsply(micBtn, inCall);
-            dsply(audioBtn, inCall);
-            dsply(callErrorBtn, s == VoiceStatus.ERROR);
-            switch (s) {
-                case VoiceStatus.STOP:
-                    break;
-                case VoiceStatus.MUTED:
-                    show(disabledMic);
-                    break;
-                case VoiceStatus.UNMUTED:
-                    hide(disabledMic);
-                    break;
-                case VoiceStatus.ERROR:
-                    var x = select("#snackbar");
-                    x.className = "show";
-                    setTimeout(function () { x.className = x.className.replace("show", ""); }, 3000);
-                    break;
-                default:
-                    break;
-            }
-        },
-        get status() {
-            return this._status;
-        },
-        _conn: null,
-        set conn(conn) {
-            this._conn = conn;
-        },
-        /**
-         * @return {RTCPeerConnection}
-         */
-        get conn() {
-            return this._conn
-        },
-
+        _joining: false,
+        _socket: null,
+        _device: null,
+        _sendTransport: null,
+        _recvTransport: null,
+        _producer: null,
         _stream: null,
-        set stream(s) {
-            this._stream = s;
-        },
-        /**
-         * @return {MediaStream}
-         */
-        get stream() {
-            return this._stream;
-        },
-
+        _consumers: new Map(),
+        _pendingConsumers: new Set(),
+        _peers: new Map(),
         _noiseCancellationEnabled: true,
-        set noiseCancellationEnabled(n) {
-            this._noiseCancellationEnabled = n;
-            if (this.inCall) {
-                this.updateVoiceSetting(n);
+        get errorMessage() { return this._errorMessage; },
+        set errorMessage(message) {
+            this._errorMessage = message;
+            updateInnnerHTML(select("#snackbar"), message);
+        },
+        set status(status) {
+            this._status = status;
+            const inCall = status == VoiceStatus.UNMUTED || status == VoiceStatus.MUTED;
+            dsply(select("#callConnecting"), status == VoiceStatus.CONNECTTING);
+            dsply(select("#callBtn"), status == VoiceStatus.STOP || status == VoiceStatus.ERROR);
+            dsply(select("#leaveVoiceBtn"), inCall);
+            dsply(select("#micBtn"), inCall);
+            dsply(select("#audioBtn"), inCall);
+            dsply(select("#callErrorBtn"), status == VoiceStatus.ERROR);
+            if (status == VoiceStatus.MUTED) show(select("#disabledMic")); else hide(select("#disabledMic"));
+            if (status == VoiceStatus.ERROR) {
+                const snackbar = select("#snackbar");
+                snackbar.className = "show";
+                setTimeout(() => snackbar.className = snackbar.className.replace("show", ""), 3000);
             }
+            this.renderPeers();
         },
-
-        get noiseCancellationEnabled() {
-            return this._noiseCancellationEnabled;
+        get status() { return this._status; },
+        get stream() { return this._stream; },
+        set stream(stream) { this._stream = stream; },
+        get inCall() { return this.status == VoiceStatus.MUTED || this.status == VoiceStatus.UNMUTED; },
+        get noiseCancellationEnabled() { return this._noiseCancellationEnabled; },
+        set noiseCancellationEnabled(enabled) { this._noiseCancellationEnabled = enabled; },
+        get serverUrl() {
+            try {
+                return window.VideoTogetherVoiceServer || window.VideoTogetherStorage.VoiceServer || "https://voice.2gether.video";
+            } catch { return window.VideoTogetherVoiceServer || "https://voice.2gether.video"; }
         },
-
-        get inCall() {
-            return this.status == VoiceStatus.MUTED || this.status == VoiceStatus.UNMUTED;
+        emitAck(event, payload) {
+            return new Promise((resolve, reject) => {
+                if (!this._socket) return reject(new Error("Voice socket is not connected"));
+                this._socket.timeout(10000).emit(event, payload, (timeoutError, response) => {
+                    if (timeoutError) return reject(timeoutError);
+                    if (!response || !response.ok) return reject(new Error(response?.error || "Voice server error"));
+                    resolve(response.data);
+                });
+            });
         },
-
-        join: async function (name, rname, mutting = false) {
-            Voice._rname = rname;
+        loadDeps() {
+            if (window.VideoTogetherVoiceDeps) return Promise.resolve(window.VideoTogetherVoiceDeps);
+            if (this._depsPromise) return this._depsPromise;
+            this._depsPromise = new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = this.serverUrl.replace(/\/$/, "") + "/voice-client-deps.js";
+                script.crossOrigin = "anonymous";
+                script.onload = () => resolve(window.VideoTogetherVoiceDeps);
+                script.onerror = () => { this._depsPromise = null; reject(new Error("Unable to load voice client")); };
+                (document.head || document.documentElement).appendChild(script);
+            });
+            return this._depsPromise;
+        },
+        transportOptions(data) {
+            return { id: data.id, iceParameters: data.iceParameters, iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters, sctpParameters: data.sctpParameters };
+        },
+        async createTransport(direction) {
+            const data = await this.emitAck("create-webrtc-transport", { roomId: this._roomId, direction });
+            const transport = direction == "send" ? this._device.createSendTransport(this.transportOptions(data)) : this._device.createRecvTransport(this.transportOptions(data));
+            transport.on("connect", ({ dtlsParameters }, callback, errback) => {
+                this.emitAck("connect-transport", { roomId: this._roomId, transportId: transport.id, dtlsParameters }).then(callback).catch(errback);
+            });
+            transport.on("connectionstatechange", (state) => {
+                if (["failed", "disconnected"].includes(state) && this.inCall) {
+                    this.errorMessage = "{$connection_lost$}";
+                    this.status = VoiceStatus.ERROR;
+                }
+            });
+            if (direction == "send") {
+                transport.on("produce", ({ rtpParameters, appData }, callback, errback) => {
+                    this.emitAck("produce-audio", { roomId: this._roomId, transportId: transport.id, rtpParameters, appData }).then(({ id }) => callback({ id })).catch(errback);
+                });
+            }
+            return transport;
+        },
+        async consume(producerInfo) {
+            if (!producerInfo || producerInfo.peerId == this._socket.id || this._consumers.has(producerInfo.producerId) || this._pendingConsumers.has(producerInfo.producerId)) return;
+            this._pendingConsumers.add(producerInfo.producerId);
+            try {
+                const data = await this.emitAck("consume-audio", { roomId: this._roomId, transportId: this._recvTransport.id, producerId: producerInfo.producerId, rtpCapabilities: this._device.rtpCapabilities });
+                const consumer = await this._recvTransport.consume(data);
+                this._consumers.set(producerInfo.producerId, consumer);
+                const audio = document.createElement("audio");
+                audio.id = "voice-producer-" + producerInfo.producerId;
+                audio.autoplay = true;
+                audio.controls = false;
+                audio.srcObject = new MediaStream([consumer.track]);
+                audio.volume = extension.getVoiceVolume() / 100;
+                select("#peer").appendChild(audio);
+                await audio.play().catch(() => {});
+                await this.emitAck("resume-consumer", { roomId: this._roomId, consumerId: consumer.id });
+            } catch (error) { console.warn("Unable to consume voice producer", error); }
+            finally { this._pendingConsumers.delete(producerInfo.producerId); }
+        },
+        removeProducer(producerId) {
+            const consumer = this._consumers.get(producerId);
+            if (consumer) consumer.close();
+            this._consumers.delete(producerId);
+            select("#voice-producer-" + producerId)?.remove();
+        },
+        bindSocketEvents() {
+            this._socket.on("new-audio-producer", (producer) => {
+                if (!this._peers.has(producer.peerId)) this._peers.set(producer.peerId, { peerId: producer.peerId, userName: producer.userName, muted: producer.muted });
+                this.renderPeers();
+                this.consume(producer);
+            });
+            this._socket.on("producer-closed", ({ producerId }) => this.removeProducer(producerId));
+            this._socket.on("peer-muted", ({ peerId, muted }) => { const peer = this._peers.get(peerId); if (peer) peer.muted = muted; this.renderPeers(); });
+            this._socket.on("peer-left", ({ peerId }) => { this._peers.delete(peerId); this.renderPeers(); });
+            this._socket.on("error", ({ message }) => { this.errorMessage = message; });
+            this._socket.on("disconnect", () => {
+                if (this.inCall) {
+                    this._reconnectPending = true;
+                    this.errorMessage = "{$connection_lost$}";
+                    this.status = VoiceStatus.ERROR;
+                }
+            });
+            this._socket.on("connect", () => {
+                if (!this._reconnectPending || this._joining) return;
+                const roomName = this._rname;
+                const muted = this._mutting;
+                this._reconnectPending = false;
+                this.cleanup();
+                this.status = VoiceStatus.STOP;
+                this.join("", roomName, muted);
+            });
+        },
+        renderPeers() {
+            const list = select("#voiceMemberList");
+            if (!list) return;
+            const peers = [...this._peers.values()];
+            updateInnnerHTML(list, peers.length ? peers.map(peer => `<div class="voice-member"><span>${this.escapeHtml(peer.userName)}</span><span>${peer.muted ? "🔇" : "🎤"}</span></div>`).join("") : `<div class="voice-member-empty">{$voice_no_members$}</div>`);
+        },
+        escapeHtml(value) {
+            const element = document.createElement("div");
+            element.textContent = String(value || "");
+            return element.innerHTML;
+        },
+        join: async function (_name, roomName, mutting = false) {
+            if (Voice._joining || Voice.inCall) return;
+            if (Voice._socket) Voice.cleanup();
+            Voice._reconnectPending = false;
+            Voice._joining = true;
+            Voice._rname = roomName || window.videoTogetherExtension.roomName;
             Voice._mutting = mutting;
-            let cancellingNoise = true;
-            try {
-                cancellingNoise = !(window.VideoTogetherStorage.EchoCancellation === false);
-            } catch { }
-
-            Voice.stop();
             Voice.status = VoiceStatus.CONNECTTING;
-            this.noiseCancellationEnabled = cancellingNoise;
-            let uid = generateUUID();
-            let notNullUuid;
             try {
-                notNullUuid = await waitForRoomUuid();
-            } catch {
-                Voice.errorMessage = "{$room_uuid_missing$}";
-                Voice.status = VoiceStatus.ERROR;
-                return;
-            }
-            const rnameRPC = fixedEncodeURIComponent(notNullUuid + "_" + rname);
-            if (rnameRPC.length > 256) {
-                Voice.errorMessage = "{$room_name_too_long$}";
-                Voice.status = VoiceStatus.ERROR;
-                return;
-            }
-            if (window.location.protocol != "https:" && window.location.protocol != 'file:') {
-                Voice.errorMessage = "{$only_support_https_website$}";
-                Voice.status = VoiceStatus.ERROR;
-                return;
-            }
-            const unameRPC = fixedEncodeURIComponent(uid + ':' + Base64.encode(generateUUID()));
-            let ucid = "";
-            console.log(rnameRPC, uid);
-            const configuration = {
-                bundlePolicy: 'max-bundle',
-                rtcpMuxPolicy: 'require',
-                sdpSemantics: 'unified-plan'
-            };
-
-            async function subscribe(pc) {
-                var res = await rpc('subscribe', [rnameRPC, unameRPC, ucid]);
-                if (res.error && typeof res.error === 'object' && typeof res.error.code === 'number' && [5002001, 5002002].indexOf(res.error.code) != -1) {
-                    Voice.join("", Voice._rname, Voice._mutting);
-                    return;
-                }
-                if (res.data) {
-                    var jsep = JSON.parse(res.data.jsep);
-                    if (jsep.type == 'offer') {
-                        await pc.setRemoteDescription(jsep);
-                        var sdp = await pc.createAnswer();
-                        await pc.setLocalDescription(sdp);
-                        await rpc('answer', [rnameRPC, unameRPC, ucid, JSON.stringify(sdp)]);
-                    }
-                }
-                setTimeout(function () {
-                    if (Voice.conn != null && pc === Voice.conn && Voice.status != VoiceStatus.STOP) {
-                        subscribe(pc);
-                    }
-                }, 3000);
-            }
-
-
-            try {
-                await start();
-            } catch (e) {
-                if (Voice.status == VoiceStatus.CONNECTTING) {
-                    Voice.status = VoiceStatus.ERROR;
-                    Voice.errorMessage = "{$connection_error$}";
-                }
-            }
-
-            if (Voice.status == VoiceStatus.CONNECTTING) {
+                if (window.location.protocol != "https:" && window.location.protocol != "file:") throw new Error("{$only_support_https_website$}");
+                const roomUuidValue = await waitForRoomUuid();
+                Voice._roomId = roomUuidValue + "_" + Voice._rname;
+                const deps = await Voice.loadDeps();
+                Voice._socket = deps.io(Voice.serverUrl, { transports: ["websocket"], reconnection: true });
+                Voice.bindSocketEvents();
+                await new Promise((resolve, reject) => { Voice._socket.once("connect", resolve); Voice._socket.once("connect_error", reject); });
+                const userName = window.VideoTogetherVoiceUserName || ((extension.role == extension.RoleEnum.Master ? "Host" : "Member") + "-" + Voice._socket.id.slice(0, 4));
+                const roomPassword = window.VideoTogetherVoiceRoomSecret || "";
+                const joined = await Voice.emitAck("join-room", { roomId: Voice._roomId, userName, roomPassword });
+                Voice._peers = new Map(joined.peers.map(peer => [peer.peerId, peer]));
+                const rtpCapabilities = await Voice.emitAck("get-rtp-capabilities", { roomId: Voice._roomId });
+                Voice._device = new deps.Device();
+                await Voice._device.load({ routerRtpCapabilities: rtpCapabilities });
+                Voice._sendTransport = await Voice.createTransport("send");
+                Voice._recvTransport = await Voice.createTransport("recv");
+                Voice.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+                const track = Voice.stream.getAudioTracks()[0];
+                track.enabled = !mutting;
+                Voice._producer = await Voice._sendTransport.produce({ track, appData: { source: "microphone" } });
+                await Promise.all(joined.existingProducers.map(producer => Voice.consume(producer)));
+                await Voice.emitAck("set-muted", { roomId: Voice._roomId, muted: mutting });
                 Voice.status = mutting ? VoiceStatus.MUTED : VoiceStatus.UNMUTED;
-            }
-
-            async function start() {
-
-                let res = await rpc('turn', [unameRPC]);
-                if (res.data && res.data.length > 0) {
-                    configuration.iceServers = res.data;
-                    configuration.iceTransportPolicy = 'relay';
-                }
-
-                Voice.conn = new RTCPeerConnection(configuration);
-
-                Voice.conn.onicecandidate = ({ candidate }) => {
-                    rpc('trickle', [rnameRPC, unameRPC, ucid, JSON.stringify(candidate)]);
-                };
-
-                Voice.conn.ontrack = (event) => {
-                    console.log("ontrack", event);
-
-                    let stream = event.streams[0];
-                    let sid = fixedDecodeURIComponent(stream.id);
-                    let id = sid.split(':')[0];
-                    // var name = Base64.decode(sid.split(':')[1]);
-                    console.log(id, uid);
-                    if (id === uid) {
-                        return;
-                    }
-                    event.track.onmute = (event) => {
-                        console.log("onmute", event);
-                    };
-
-                    let aid = 'peer-audio-' + id;
-                    let el = select('#' + aid);
-                    if (el) {
-                        el.srcObject = stream;
-                    } else {
-                        el = document.createElement(event.track.kind)
-                        el.id = aid;
-                        el.srcObject = stream;
-                        el.autoplay = true;
-                        el.controls = false;
-                        select('#peer').appendChild(el);
-                    }
-                };
-
-                try {
-                    const constraints = {
-                        audio: {
-                            echoCancellation: cancellingNoise,
-                            noiseSuppression: cancellingNoise
-                        },
-                        video: false
-                    };
-                    Voice.stream = await navigator.mediaDevices.getUserMedia(constraints);
-                } catch (err) {
-                    if (Voice.status == VoiceStatus.CONNECTTING) {
-                        Voice.errorMessage = "{$no_micphone_access$}";
-                        Voice.status = VoiceStatus.ERROR;
-                    }
-                    return;
-                }
-
-                Voice.stream.getTracks().forEach((track) => {
-                    track.enabled = !mutting;
-                    Voice.conn.addTrack(track, Voice.stream);
-                });
-
-                await Voice.conn.setLocalDescription(await Voice.conn.createOffer());
-                res = await rpc('publish', [rnameRPC, unameRPC, JSON.stringify(Voice.conn.localDescription)]);
-                if (res.data) {
-                    let jsep = JSON.parse(res.data.jsep);
-                    if (jsep.type == 'answer') {
-                        await Voice.conn.setRemoteDescription(jsep);
-                        ucid = res.data.track;
-                        await subscribe(Voice.conn);
-                    }
-                } else {
-                    throw new Error('{$unknown_error$}');
-                }
-                Voice.conn.oniceconnectionstatechange = e => {
-                    if (Voice.conn.iceConnectionState == "disconnected" || Voice.conn.iceConnectionState == "failed" || Voice.conn.iceConnectionState == "closed") {
-                        Voice.errorMessage = "{$connection_lost$}";
-                        Voice.status = VoiceStatus.ERROR;
-                    } else {
-                        if (Voice.status == VoiceStatus.ERROR) {
-                            Voice.status = Voice._mutting ? VoiceStatus.MUTED : VoiceStatus.UNMUTED;
-                        }
-                    }
-                }
-            }
-
-            async function rpc(method, params = [], retryTime = -1) {
-                try {
-                    const response = await window.videoTogetherExtension.Fetch(extension.video_together_host + "/kraken", "POST", { id: generateUUID(), method: method, params: params }, {
-                        method: 'POST', // *GET, POST, PUT, DELETE, etc.
-                        mode: 'cors', // no-cors, *cors, same-origin
-                        cache: 'no-cache', // *default, no-cache, reload, force-cache, only-if-cached
-                        credentials: 'omit', // include, *same-origin, omit
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        redirect: 'follow', // manual, *follow, error
-                        referrerPolicy: 'no-referrer', // no-referrer, *client
-                        body: JSON.stringify({ id: generateUUID(), method: method, params: params }) // body data type must match "Content-Type" header
-                    });
-                    return await response.json(); // parses JSON response into native JavaScript objects
-                } catch (err) {
-                    if (Voice.status == VoiceStatus.STOP) {
-                        return;
-                    }
-                    if (retryTime == 0) {
-                        throw err;
-                    }
-                    await new Promise(r => setTimeout(r, 1000));
-                    return await rpc(method, params, retryTime - 1);
-                }
-            }
+            } catch (error) {
+                console.error(error);
+                Voice.errorMessage = error.message || "{$connection_error$}";
+                Voice.cleanup();
+                Voice.status = VoiceStatus.ERROR;
+            } finally { Voice._joining = false; }
         },
-        stop: () => {
-            try {
-                Voice.conn.getSenders().forEach(s => {
-                    if (s.track) {
-                        s.track.stop();
-                    }
-                });
-            } catch (e) { };
-
-            [...select('#peer').querySelectorAll("*")].forEach(e => e.remove());
-            try {
-                Voice.conn.close();
-                delete Voice.conn;
-            } catch { }
-            try {
-                Voice.stream.getTracks().forEach(function (track) {
-                    track.stop();
-                });
-                delete Voice.stream;
-            } catch { }
+        cleanup(disconnect = true) {
+            for (const consumer of this._consumers.values()) consumer.close();
+            this._consumers.clear();
+            this._pendingConsumers.clear();
+            this._producer?.close();
+            this._sendTransport?.close();
+            this._recvTransport?.close();
+            this._stream?.getTracks().forEach(track => track.stop());
+            if (disconnect) this._socket?.disconnect();
+            [...select("#peer").querySelectorAll("*")].forEach(element => element.remove());
+            this._peers.clear();
+            this._producer = this._sendTransport = this._recvTransport = this._device = this._stream = this._socket = null;
+            this.renderPeers();
+        },
+        stop: async function () {
+            try { if (Voice._socket?.connected && Voice._roomId) await Voice.emitAck("leave-room", { roomId: Voice._roomId }); } catch {}
+            Voice.cleanup();
             Voice.status = VoiceStatus.STOP;
         },
-        mute: () => {
-            Voice.conn.getSenders().forEach(s => {
-                if (s.track) {
-                    s.track.enabled = false;
-                }
-            });
+        mute: async function () {
+            if (Voice._producer) await Voice._producer.pause();
+            Voice._stream?.getAudioTracks().forEach(track => track.enabled = false);
             Voice._mutting = true;
+            await Voice.emitAck("set-muted", { roomId: Voice._roomId, muted: true }).catch(() => {});
             Voice.status = VoiceStatus.MUTED;
         },
-        unmute: () => {
-            Voice.conn.getSenders().forEach(s => {
-                if (s.track) {
-                    s.track.enabled = true;
-                }
-            });
+        unmute: async function () {
+            if (Voice._producer) await Voice._producer.resume();
+            Voice._stream?.getAudioTracks().forEach(track => track.enabled = true);
             Voice._mutting = false;
+            await Voice.emitAck("set-muted", { roomId: Voice._roomId, muted: false }).catch(() => {});
             Voice.status = VoiceStatus.UNMUTED;
         },
-        updateVoiceSetting: async (cancellingNoise = false) => {
-            const constraints = {
-                audio: {
-                    echoCancellation: cancellingNoise,
-                    noiseSuppression: cancellingNoise
-                },
-                video: false
-            };
-            try {
-                prevStream = Voice.stream;
-                Voice.stream = await navigator.mediaDevices.getUserMedia(constraints);
-                Voice.conn.getSenders().forEach(s => {
-                    if (s.track) {
-                        s.replaceTrack(Voice.stream.getTracks().find(t => t.kind == s.track.kind));
-                    }
-                })
-                prevStream.getTracks().forEach(t => t.stop());
-                delete prevStream;
-            } catch (e) { console.log(e); };
-        }
+        updateVoiceSetting: async function () {}
     }
-
-    function generateUUID() {
-        if (crypto.randomUUID != undefined) {
-            return crypto.randomUUID();
-        }
-        return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
-            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
-        );
-    }
-
-    function generateTempUserId() {
-        return generateUUID() + ":" + Date.now() / 1000;
-    }
-
-    /**
-     *
-     *  Base64 encode / decode
-     *  http://www.webtoolkit.info
-     *
-     **/
-    const Base64 = {
-
-        // private property
-        _keyStr: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-
-        // public method for encoding
-        , encode: function (input) {
-            var output = "";
-            var chr1, chr2, chr3, enc1, enc2, enc3, enc4;
-            var i = 0;
-
-            input = Base64._utf8_encode(input);
-
-            while (i < input.length) {
-                chr1 = input.charCodeAt(i++);
-                chr2 = input.charCodeAt(i++);
-                chr3 = input.charCodeAt(i++);
-
-                enc1 = chr1 >> 2;
-                enc2 = ((chr1 & 3) << 4) | (chr2 >> 4);
-                enc3 = ((chr2 & 15) << 2) | (chr3 >> 6);
-                enc4 = chr3 & 63;
-
-                if (isNaN(chr2)) {
-                    enc3 = enc4 = 64;
-                }
-                else if (isNaN(chr3)) {
-                    enc4 = 64;
-                }
-
-                output = output +
-                    this._keyStr.charAt(enc1) + this._keyStr.charAt(enc2) +
-                    this._keyStr.charAt(enc3) + this._keyStr.charAt(enc4);
-            } // Whend
-
-            return output;
-        } // End Function encode
-
-
-        // public method for decoding
-        , decode: function (input) {
-            var output = "";
-            var chr1, chr2, chr3;
-            var enc1, enc2, enc3, enc4;
-            var i = 0;
-
-            input = input.replace(/[^A-Za-z0-9\+\/\=]/g, "");
-            while (i < input.length) {
-                enc1 = this._keyStr.indexOf(input.charAt(i++));
-                enc2 = this._keyStr.indexOf(input.charAt(i++));
-                enc3 = this._keyStr.indexOf(input.charAt(i++));
-                enc4 = this._keyStr.indexOf(input.charAt(i++));
-
-                chr1 = (enc1 << 2) | (enc2 >> 4);
-                chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
-                chr3 = ((enc3 & 3) << 6) | enc4;
-
-                output = output + String.fromCharCode(chr1);
-
-                if (enc3 != 64) {
-                    output = output + String.fromCharCode(chr2);
-                }
-
-                if (enc4 != 64) {
-                    output = output + String.fromCharCode(chr3);
-                }
-
-            } // Whend
-
-            output = Base64._utf8_decode(output);
-
-            return output;
-        } // End Function decode
-
-
-        // private method for UTF-8 encoding
-        , _utf8_encode: function (string) {
-            var utftext = "";
-            string = string.replace(/\r\n/g, "\n");
-
-            for (var n = 0; n < string.length; n++) {
-                var c = string.charCodeAt(n);
-
-                if (c < 128) {
-                    utftext += String.fromCharCode(c);
-                }
-                else if ((c > 127) && (c < 2048)) {
-                    utftext += String.fromCharCode((c >> 6) | 192);
-                    utftext += String.fromCharCode((c & 63) | 128);
-                }
-                else {
-                    utftext += String.fromCharCode((c >> 12) | 224);
-                    utftext += String.fromCharCode(((c >> 6) & 63) | 128);
-                    utftext += String.fromCharCode((c & 63) | 128);
-                }
-
-            } // Next n
-
-            return utftext;
-        } // End Function _utf8_encode
-
-        // private method for UTF-8 decoding
-        , _utf8_decode: function (utftext) {
-            var string = "";
-            var i = 0;
-            var c, c1, c2, c3;
-            c = c1 = c2 = 0;
-
-            while (i < utftext.length) {
-                c = utftext.charCodeAt(i);
-
-                if (c < 128) {
-                    string += String.fromCharCode(c);
-                    i++;
-                }
-                else if ((c > 191) && (c < 224)) {
-                    c2 = utftext.charCodeAt(i + 1);
-                    string += String.fromCharCode(((c & 31) << 6) | (c2 & 63));
-                    i += 2;
-                }
-                else {
-                    c2 = utftext.charCodeAt(i + 1);
-                    c3 = utftext.charCodeAt(i + 2);
-                    string += String.fromCharCode(((c & 15) << 12) | ((c2 & 63) << 6) | (c3 & 63));
-                    i += 3;
-                }
-
-            } // Whend
-
-            return string;
-        } // End Function _utf8_decode
-    }
-
-    let GotTxtMsgCallback = undefined;
 
     class VideoTogetherFlyPannel {
         constructor() {
@@ -1356,6 +1089,8 @@
                 this.exitButton = wrapper.querySelector("#videoTogetherExitButton");
                 this.callBtn = wrapper.querySelector("#callBtn");
                 this.callBtn.onclick = () => Voice.join("", window.videoTogetherExtension.roomName);
+                this.leaveVoiceBtn = wrapper.querySelector("#leaveVoiceBtn");
+                this.leaveVoiceBtn.onclick = () => Voice.stop();
                 this.helpButton = wrapper.querySelector("#videoTogetherHelpButton");
                 this.audioBtn = wrapper.querySelector("#audioBtn");
                 this.micBtn = wrapper.querySelector("#micBtn");

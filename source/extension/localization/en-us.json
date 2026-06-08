@@ -70,5 +70,9 @@
     "ExportAsfile": "Export as file(experimental)",
     "FsNotSupport": "File System API is not supported in your browser, large video may not be able to export.",
     "DownloadingFFmepg": "Downloading FFmpeg, please wait a few minutes.",
-    "StorageAlert": "This is a temporary storage space. Storing too many videos will cause the browser to crash. Please delete unnecessary videos in time. If you want to save it for a long time, please export the video file on the video playback page."
+    "StorageAlert": "This is a temporary storage space. Storing too many videos will cause the browser to crash. Please delete unnecessary videos in time. If you want to save it for a long time, please export the video file on the video playback page.",
+    "voice_join_button": "Join Voice",
+    "voice_leave_button": "Leave Voice",
+    "voice_members": "Voice members",
+    "voice_no_members": "No voice members"
 }
