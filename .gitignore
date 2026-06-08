@@ -1,6 +1,7 @@
 *.pem
 .DS_Store
 node_modules
+source/voice-server/public
 chrome.zip
 xcuserdata/
 *.zip
