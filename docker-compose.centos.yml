@@ -1,0 +1,37 @@
+services:
+  voice-server:
+    image: "${VOICE_SERVER_IMAGE:-ghcr.io/yejnf/videomicrophonetogether-voice-server:latest}"
+    container_name: videomicrophonetogether-voice-server
+    pull_policy: always
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "3000"
+    ports:
+      - "${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-40100}:${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-40100}/udp"
+    environment:
+      PORT: 3000
+      PUBLIC_IP: ${PUBLIC_IP}
+      DOMAIN: ${DOMAIN}
+      RTC_MIN_PORT: ${RTC_MIN_PORT:-40000}
+      RTC_MAX_PORT: ${RTC_MAX_PORT:-40100}
+      ROOM_SECRET: ${ROOM_SECRET:-}
+      ALLOW_OPEN_ROOMS: ${ALLOW_OPEN_ROOMS:-false}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: videomicrophonetogether-nginx
+    restart: unless-stopped
+    depends_on:
+      - voice-server
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx:/etc/nginx/conf.d:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
