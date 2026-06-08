@@ -1,0 +1,22 @@
+services:
+  voice-server:
+    image: "${VOICE_SERVER_IMAGE:-ghcr.io/yejnf/videomicrophonetogether-voice-server:latest}"
+    pull_policy: always
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PORT:-3000}:3000/tcp"
+      - "${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-40100}:${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-40100}/udp"
+    environment:
+      PORT: 3000
+      PUBLIC_IP: ${PUBLIC_IP}
+      DOMAIN: ${DOMAIN}
+      RTC_MIN_PORT: ${RTC_MIN_PORT:-40000}
+      RTC_MAX_PORT: ${RTC_MAX_PORT:-40100}
+      ROOM_SECRET: ${ROOM_SECRET:-}
+      ALLOW_OPEN_ROOMS: ${ALLOW_OPEN_ROOMS:-false}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
